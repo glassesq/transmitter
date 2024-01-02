@@ -14,6 +14,8 @@ from scipy.io import wavfile
 from scipy.signal import spectrogram
 import pygame
 import pywt
+import librosa
+import multiprocessing
 
 parser = argparse.ArgumentParser(description="Audio helper.")
 functions = ['generate', 'draw', 'record', 'preamble', 'send', 'receive' ]
@@ -39,8 +41,8 @@ PAYLOAD_SIZE = 8
 MSG_SIZE = len(PREAMBLE_CODE) + len(POSTAMBLE_CODE) + PAYLOAD_SIZE
 CHANNELS = 2 
 SINGLE_DURATION = 0.2
-CHORD_DIFF = 5
-POWER_THRESHOLD = 0.0001
+CHORD_DIFF = 7
+POWER_THRESHOLD = 1e-6
 MAX_SAMPLE_MSG = int(MSG_SIZE * SINGLE_DURATION * 44100)
   
 
@@ -71,9 +73,9 @@ def butter_bandpass_filter(data, lowcut, highcut, sample_rate, order=4):
   return filtered_data
 
 F_MAP = [ piano_major_scale(i * CHORD_DIFF) for i in range(CHANNELS) ]
-EXTEND_F_MAP = [ F_MAP[0] - 100 ]
+EXTEND_F_MAP = [ F_MAP[0] - 300 ]
 EXTEND_F_MAP.extend( F_MAP )
-EXTEND_F_MAP.append( F_MAP[-1] + 100 )
+EXTEND_F_MAP.append( F_MAP[-1] + 300 )
                 # piano_major_scale(i * 3) for i in range(-1, CHANNELS + 1, 1) ]
 
 def find_nearest_major_scale(frequency):
@@ -156,28 +158,32 @@ def decode(signal):
     signal = decode_once(signal)
     return signal
 
+
 def decode_once(signal):
     if len(signal) < MAX_SAMPLE_MSG: 
       return signal
 
     # Set the cutoff frequencies for the band-pass filter
-    lowcut = 200  # Adjust as needed
-    highcut = 600  # Adjust as needed
+    lowcut = 100  # Adjust as needed
+    highcut = 5000  # Adjust as needed
     
     # Apply the band-pass filter
     signal = butter_bandpass_filter(signal, lowcut, highcut, 44100, 5)
-    CHUNK = 4096
-
-    wavelet = 'db1'  # 选择小波基函数
-    level = 4        # 分解的层数
-    coeffs = pywt.wavedec(signal, wavelet, level=level)
+    # Apply spectral subtraction for denoising
+    # D = librosa.amplitude_to_db(librosa.stft(signal), ref=np.max)
+    # D2 = librosa.decompose.nn_filter(D, aggregate=np.median, metric='cosine')
+    # Invert the denoised spectrogram to get the denoised signal
+    # signal = librosa.griffinlim(librosa.db_to_amplitude(D2))
+    # wavelet = 'db1'  # 选择小波基函数
+    # level = 4        # 分解的层数
+    # coeffs = pywt.wavedec(signal, wavelet, level=level)
     
-    # 阈值处理
-    threshold = 0.001  # 阈值，需要根据实际情况调整
-    coeffs_thresholded = [pywt.threshold(c, threshold, mode='soft') for c in coeffs]
+    # # 阈值处理
+    # threshold = 0.00005  # 阈值，需要根据实际情况调整
+    # coeffs_thresholded = [pywt.threshold(c, threshold, mode='soft') for c in coeffs]
     
-    # 小波逆变换
-    signal = pywt.waverec(coeffs_thresholded, wavelet)
+    # # 小波逆变换
+    # signal = pywt.waverec(coeffs_thresholded, wavelet)
 
     # with wave.open('denoise_xb.wav', 'wb') as wf:
     #   p = pyaudio.PyAudio()
@@ -202,57 +208,65 @@ def decode_once(signal):
     #   stream.close()
     #   p.terminate()
     
-    # exit()
-
     f_rate = 44100
     time = np.linspace( 0, len(signal) / f_rate, num = len(signal)) 
+    offset = -1
+    steps_table = [1, 1, 2, 3, 5]
+    denoised = False
+    for small_step in steps_table:
+      SMALL_STEP = small_step
+      SMALL_STEP_LEN = SINGLE_DURATION / SMALL_STEP
+      
+      step = int(SMALL_STEP_LEN * 44100)
+      sliced = []
+      candidates = []
+      power_seq = []
+      t2 = []
+      v2 = []
+      count = 0
+      for i in range(0, len(signal) - step,  step ):
+        fft_result = np.fft.fft(signal[i : i + step])
+        fft_freqs = np.fft.fftfreq(len(fft_result), 1/44100)
+        # 找到主频率
+        main_frequency = np.abs(fft_freqs[np.argmax(np.abs(fft_result))])
+        power = np.max(np.abs(fft_result)) 
+        possible_bit = 999
+        if power < POWER_THRESHOLD:
+          main_frequency = 0.0
+          power = 0.0
+        else:
+          possible_bit = find_nearest_major_scale(main_frequency)
+        candidates.append(count)
+        power_seq.append(power)
+        sliced.append(possible_bit)
+        count+=1
 
-    SMALL_STEP = 4
-    SMALL_STEP_LEN = SINGLE_DURATION / SMALL_STEP
+      preamble = []
+      for s in PREAMBLE_CODE:
+        for i in range(SMALL_STEP):
+          preamble.append(0.0 if s == "0" else 1.0)
 
-    step = int(SMALL_STEP_LEN * 44100)
-    sliced = []
-    candidates = []
-    power_seq = []
-    t2 = []
-    v2 = []
-    count = 0
-    for i in range(0, len(signal) - step,  step ):
-      fft_result = np.fft.fft(signal[i : i + step])
-      fft_freqs = np.fft.fftfreq(len(fft_result), 1/44100)
-      # 找到主频率
-      main_frequency = np.abs(fft_freqs[np.argmax(np.abs(fft_result))])
-      a = np.argmax(np.abs(fft_result))
-      power = np.max(np.abs(fft_result)) / 500.0
-      possible_bit = 999
-      if power < POWER_THRESHOLD:
-        main_frequency = 0.0
-        power = 0.0
+      payload_index = detect_preamble(sliced, preamble)
+      if payload_index is None:
+        if not denoised:
+          denoised = True
+          # signal = librosa.effects.trim(signal, top_db=40)[0]
+          # print("too much moise: let us denoise.")
+        # plt.figure(1)
+        # plt.title("Sound Wave")
+        # plt.xlabel("Time")
+        # plt.plot(time, signal)
+        # # plt.plot(t2, v2, color='red')
+        # plt.show()
+        # print(SMALL_STEP, "no preamble", preamble, "\n", sliced)
+        continue
       else:
-        # for i in range(len(fft_result)):
-          # if i != a and fft_freqs[i] != -fft_freqs[a] and ( ( np.abs(fft_result[a]) - np.abs(fft_result[i]) ) / np.abs(fft_result[i] ) < 0.15 ):
-            # print("similar:", fft_freqs[i], np.abs(fft_result[i]), fft_freqs[a], np.abs(fft_result[a]) )
-        possible_bit = find_nearest_major_scale(main_frequency)
-        print( "main:", main_frequency, power, possible_bit )
-      candidates.append(count)
-      power_seq.append(power)
-      sliced.append(possible_bit)
-      count+=1
-
-    preamble = []
-    for s in PREAMBLE_CODE:
-      for i in range(SMALL_STEP):
-        preamble.append(0.0 if s == "0" else 1.0)
-
-    print( sliced, preamble )
-    payload_index = detect_preamble(sliced, preamble)
-    if payload_index is None:
-      print( payload_index )
+        step = int(SINGLE_DURATION * 44100)
+        offset = int(payload_index * SMALL_STEP_LEN * 44100)
+        break
+    if offset == -1:
       return signal[-MAX_SAMPLE_MSG:]
-
-    step = int(SINGLE_DURATION * 44100)
-    offset = int(payload_index * SMALL_STEP_LEN * 44100)
-
+    print("good:", sliced)
     if offset + MAX_SAMPLE_MSG > len(signal):
       return signal[offset:]
 
@@ -262,7 +276,7 @@ def decode_once(signal):
       fft_freqs = np.fft.fftfreq(len(fft_result), 1/44100)
       # 找到主频率
       main_frequency = np.abs(fft_freqs[np.argmax(np.abs(fft_result))])
-      power = np.max(np.abs(fft_result)) / 500.0
+      power = np.max(np.abs(fft_result)) 
       possible_bit = 999
       if power < POWER_THRESHOLD:
         main_frequency = 0.0
@@ -281,18 +295,8 @@ def decode_once(signal):
     print("payload:", msg[ len(PREAMBLE_CODE): len(PREAMBLE_CODE) + PAYLOAD_SIZE ] )
 
     # msg = sliced[:MSG_SIZE]
-    # plt.figure(1)
-    # plt.title("Sound Wave")
-    # plt.xlabel("Time")
-    # plt.plot(time, signal)
-    # # plt.plot(t2, v2, color='red')
-    # plt.show()
-    # print("payload:", msg[ len(PREAMBLE_CODE): len(PREAMBLE_CODE) + PAYLOAD_SIZE ] )
-
 
     return signal[offset + MAX_SAMPLE_MSG: ]
-
-
 
 
 def draw_audio(path):
@@ -338,25 +342,39 @@ def send_text_two_bit(payload, stream, wf = None):
   for s in seq:
     generate_bit([0 if s == "0" else 1], stream, wf)
 
+def keep_decoding(frame_queue):
+  signal = []
+  count = 0
+  while True:
+    count = 0
+    while True:
+      count += 1
+      f = frame_queue.get()
+      signal = np.append(signal, np.frombuffer(f, dtype=np.float32))
+      if len(signal) / 44100 > 5:
+        break
+    if len(signal) > MAX_SAMPLE_MSG:
+      signal = decode(signal)
+      print("decode.", len(signal), signal[0])
+
 def keep_recording(record_length = 100):
+  frame_queue = multiprocessing.Queue(maxsize=4096)
+  process = multiprocessing.Process(target=keep_decoding, args=(frame_queue, ))
+  process.start()
+
   print("keep recording...")
   with wave.open('record.wav', 'wb') as wf:
     p = pyaudio.PyAudio()
     wf.setnchannels(1)
     wf.setsampwidth(p.get_sample_size(pyaudio.paFloat32))
     wf.setframerate(44100)
-    stream = p.open(format=pyaudio.paFloat32, channels=1, rate=44100, input=True)
+    stream = p.open(format=pyaudio.paFloat32, channels=1, rate=44100, input=True, frames_per_buffer=4096)
     print('Recording...')
     CHUNK = 4096
     frame = []
     for _ in range(0, 44100 // CHUNK * record_length):
         v = stream.read(CHUNK)
-        wf.writeframes(v)
-        vf32 = np.frombuffer(v, dtype=np.float32)
-        frame = np.append(frame, vf32)
-        frame = decode(frame)
-    print(frame)
-    decode(frame)
+        frame_queue.put(v)
     print('Done')
     stream.close()
     p.terminate()
