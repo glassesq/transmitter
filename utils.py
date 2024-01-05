@@ -63,7 +63,19 @@ def detect_preamble(audio_data, preamble_sequence):
       return None
     return max_index
 
-def save_signal(signal, sampling_rate, CHUNK=4096, fn ="denoise_xb.wav"):
+def save_signal(signal, sampling_rate, fn, CHUNK=4096):
+  # print(type(signal), type(signal[0]))
+  # s = np.iinfo(np.int16).max * signal
+  wavfile.write(fn, sampling_rate, signal)
+  # print(sampling_rate)
+  # print("len:", len(signal), np.max(signal), np.min(signal))
+  # with wavfile.open(fn, 'w', sample_rate = sampling_rate, num_channels=1, bits_per_sample=32, fmt=wavfile.chunk.WavFormat.IEEE_FLOAT ) as wf:
+    # wf.write_float([signal])
+  return
+ 
+
+
+
   with wave.open(fn, 'wb') as wf:
     p = pyaudio.PyAudio()
     wf.setnchannels(1)

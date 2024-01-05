@@ -30,9 +30,11 @@ class Player:
     self.switch = 0
     self.count = 0
 
+    self.symall = None
+
     # message layout
     # YYY: preamble code + payload + postamble
-    self.PAYLOAD_SIZE = 50
+    self.PAYLOAD_SIZE = 1
     self.PREAMBLE_CODE="1112223344"
     self.POSTAMBLE_CODE="4433322111"
     self.MSG_SIZE = len(self.PREAMBLE_CODE) + len(self.POSTAMBLE_CODE) + self.PAYLOAD_SIZE
@@ -49,7 +51,7 @@ class Player:
     # Use piano chords as frequency map 
     # YYY: it is not the best frequency for transmitting, but the best for my ears when testing.
     self.JUMP_FREQ_AREA_PER_SYMBOL = 2 # Increase this number to get more accurate result.
-    self.SYMBOL_PER_DURATION = 3 # Increase this number to transfer more info at one duration
+    self.SYMBOL_PER_DURATION = 2 # Increase this number to transfer more info at one duration
     self.CHANNELS = 8 # Increaase this number to transfer more info at one duration.
     self.FGAP = 100 # Increase this number to get more accurate result.
     self.CHORD_DIFF = 8 # 
@@ -78,10 +80,21 @@ class Player:
 
   def generate_bit(self, index, stream, duration, sampling_rate, wf = None):
     audio = np.sum( [ generate_beep(duration, self.F_MAP[_index] , sampling_rate) for _index in index ], axis=0)
+    audio = audio / len(index)
+    # g_audio = np.array([ generate_beep(duration, self.F_MAP[_index] , sampling_rate) for _index in index ])
+    # g_audio = np.array( audio ) * 2
+    # g_audio.resize( (2, len(audio) ) )
+    # g_audio.resize( ( len(index), len(audio) )   )
+    # print(g_audio.shape)
+    # exit()
     sbytes = np.array(audio, dtype=np.float32)
     stream.write(sbytes.tobytes())
-    if wf:
-      wf.writeframes(sbytes.tobytes())
+    # if wf:
+      # save_signal(audio, 44100)
+      # print(wf.get
+      # sbytes = (g_audio * 32767).astype(dtype=np.int16)
+      # wf.writeframes(sbytes.tobytes())
+    return audio
 
   # select target frequency band
   # YYY: Given fft_result, fft_reqs and power_threshold, map literal signals towards possible bit in frequency map. If the strength of that frequency is too weak, consider it as a noise.
@@ -154,17 +167,17 @@ class Player:
     p = pyaudio.PyAudio()
     stream = p.open(rate=self.F_SAMPLE_RATE, channels=1, format=pyaudio.paFloat32, output=True)
     # wf is used of testing, can be removed later.
-    wf = wave.open('output.wav', 'wb')
-    wf.setsampwidth(p.get_sample_size(pyaudio.paFloat32))
-    wf.setframerate(self.F_SAMPLE_RATE)
-    wf.setnchannels(1)
+    # wf = wave.open('output.wav', 'wb')
+    # wf.setsampwidth(2)
+    # wf.setframerate(self.F_SAMPLE_RATE)
+    # wf.setnchannels(2)
     chunks = [ payload[i:i+self.SYMBOL_PER_PAYLOAD] for i in range(0, len(payload), self.SYMBOL_PER_PAYLOAD)]
     for chunk in chunks:
-      self.send_text_n_bit(chunk, stream, wf)
+      self.send_text_n_bit(chunk, stream, None)
       print("chunk:", self.decode_payload(chunk), chunk)
     stream.close()
     p.terminate()
-    wf.close()
+    save_signal(self.symall, 44100, "output.wav")
   
   def copy_amble_code(self, code, time):
     a = []
@@ -187,7 +200,15 @@ class Player:
         s = seq[ symbol_group * self.SYMBOL_PER_DURATION + symbol_index ]
         bits.append( self.compute_target_frequency_index( s , jump_index, symbol_index)  )
       print(bits)
-      self.generate_bit(bits, stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
+      sym = self.generate_bit(bits, stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
+      if self.symall is None:
+        self.symall = sym
+      else:
+        self.symall = np.append(self.symall, sym)
+    
+    print(self.symall.shape)
+    # save_signal(symall, 44100, fn = "output.wav")
+    # print(symall)
         
         # target_bit = seq[symbol_i]
     # for s in seq:
