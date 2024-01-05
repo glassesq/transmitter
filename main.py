@@ -6,7 +6,6 @@ import wave
 import numpy as np
 import pygame
 import pywt
-import librosa
 import multiprocessing
 
 parser = argparse.ArgumentParser(description="Audio helper.")
@@ -34,7 +33,7 @@ class Player:
 
     # message layout
     # YYY: preamble code + payload + postamble
-    self.PAYLOAD_SIZE = 1
+    self.PAYLOAD_SIZE = 10
     self.PREAMBLE_CODE="1112223344"
     self.POSTAMBLE_CODE="4433322111"
     self.MSG_SIZE = len(self.PREAMBLE_CODE) + len(self.POSTAMBLE_CODE) + self.PAYLOAD_SIZE
@@ -51,7 +50,7 @@ class Player:
     # Use piano chords as frequency map 
     # YYY: it is not the best frequency for transmitting, but the best for my ears when testing.
     self.JUMP_FREQ_AREA_PER_SYMBOL = 2 # Increase this number to get more accurate result.
-    self.SYMBOL_PER_DURATION = 2 # Increase this number to transfer more info at one duration
+    self.SYMBOL_PER_DURATION = 3 # Increase this number to transfer more info at one duration
     self.CHANNELS = 8 # Increaase this number to transfer more info at one duration.
     self.FGAP = 100 # Increase this number to get more accurate result.
     self.CHORD_DIFF = 8 # 
@@ -199,7 +198,6 @@ class Player:
       for symbol_index in range(self.SYMBOL_PER_DURATION):
         s = seq[ symbol_group * self.SYMBOL_PER_DURATION + symbol_index ]
         bits.append( self.compute_target_frequency_index( s , jump_index, symbol_index)  )
-      print(bits)
       sym = self.generate_bit(bits, stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
       if self.symall is None:
         self.symall = sym
