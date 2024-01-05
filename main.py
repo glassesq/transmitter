@@ -25,50 +25,56 @@ class Player:
   def __init__(self):
     self.F_SAMPLE_RATE = 44100
     self.FRAMES_PER_BUFFER = 4096
-    self.SINGLE_DURATION = 0.04
+    self.SINGLE_DURATION = 0.05
 
     self.switch = 0
     self.count = 0
 
     # message layout
     # YYY: preamble code + payload + postamble
-    self.PAYLOAD_SIZE = 100
-    self.PREAMBLE_CODE="0000012300"
-    self.POSTAMBLE_CODE="1111321000"
+    self.PAYLOAD_SIZE = 50
+    self.PREAMBLE_CODE="1112223344"
+    self.POSTAMBLE_CODE="4433322111"
     self.MSG_SIZE = len(self.PREAMBLE_CODE) + len(self.POSTAMBLE_CODE) + self.PAYLOAD_SIZE
 
     self.MIN_SAMPLE_MSG = int(self.MSG_SIZE * self.SINGLE_DURATION * self.F_SAMPLE_RATE)
     self.MAX_SAMPLE_MSG = int(self.MSG_SIZE * self.SINGLE_DURATION * self.F_SAMPLE_RATE)
 
+    # TODO: remove steps.
     self.STEPS_TABLE = [1, 2, 3, 5] 
     
-    self.PREAMBLE_TEMPLATE = {}
-    for step in self.STEPS_TABLE:
-      preamble = []
-      for s in self.PREAMBLE_CODE:
-        for i in range(step):
-          preamble.append(float(ord(s) - ord("0")))
-      self.PREAMBLE_TEMPLATE[step] = preamble
+    # for step in self.STEPS_TABLE:
+
 
     # Use piano chords as frequency map 
     # YYY: it is not the best frequency for transmitting, but the best for my ears when testing.
-    self.FREQ_AREA_PER_SYMBOL = 2 # Increase this number to get more accurate result.
-    self.SYMBOL_PER_DURATION = 1 # Increase this number to transfer more info at one duration
-    self.CHANNELS = 60 # Increaase this number to transfer more info at one duration.
-    self.FGAP = 30 # Increase this number to get more accurate result.
+    self.JUMP_FREQ_AREA_PER_SYMBOL = 2 # Increase this number to get more accurate result.
+    self.SYMBOL_PER_DURATION = 3 # Increase this number to transfer more info at one duration
+    self.CHANNELS = 8 # Increaase this number to transfer more info at one duration.
+    self.FGAP = 100 # Increase this number to get more accurate result.
     self.CHORD_DIFF = 8 # 
+
+    preamble = []
+    for s in self.PREAMBLE_CODE:
+      for i in range(self.SYMBOL_PER_DURATION):
+        preamble.append(float(ord(s) - ord("0")))
+      # self.PREAMBLE_TEMPLATE[step] = preamble
+    self.PREAMBLE_TEMPLATE = preamble
+
+    self.SYMBOL_PER_PAYLOAD = self.PAYLOAD_SIZE * self.SYMBOL_PER_DURATION
 
     self.POWER_THRESHOLD = 5.0 / self.F_SAMPLE_RATE
     # self.F_MAP = [ piano_major_scale(i * self.CHORD_DIFF) for i in range(self.CHANNELS) ]
 
     self.BASE_FREQ = 1000
-    self.GAP_RATE = 3 # Increase this number to get more accurate result
-    self.AREA_GAP = self.FGAP * self.CHANNELS * self.GAP_RATE
+    self.GAP_RATE = 2.2 # Increase this number to get more accurate result
+    self.AREA_GAP = int( self.FGAP * self.CHANNELS * self.GAP_RATE * 1.15 )
     self.F_MAP = []
-    for a in range(self.FREQ_AREA_PER_SYMBOL * self.SYMBOL_PER_DURATION):
+    for a in range(self.JUMP_FREQ_AREA_PER_SYMBOL * self.SYMBOL_PER_DURATION):
       self.F_MAP.extend([ self.BASE_FREQ + self.AREA_GAP * a + i * (self.FGAP * self.GAP_RATE) for i in range(self.CHANNELS) ])
+    print(self.F_MAP)
 
-    self.debug = True
+    self.debug = False
 
   def generate_bit(self, index, stream, duration, sampling_rate, wf = None):
     audio = np.sum( [ generate_beep(duration, self.F_MAP[_index] , sampling_rate) for _index in index ], axis=0)
@@ -79,20 +85,20 @@ class Player:
 
   # select target frequency band
   # YYY: Given fft_result, fft_reqs and power_threshold, map literal signals towards possible bit in frequency map. If the strength of that frequency is too weak, consider it as a noise.
-  def select_frequency(self, fft_result, fft_freqs, power_threshold, count = 0):
+  def select_frequency(self, fft_result, fft_freqs, power_threshold, jump_index, symbol_index = 0) :
     stop = False
     ans = None
-    cnt = 0
+    chord = 0
     for i in range(len(fft_result) // 2):
-      while fft_freqs[i] > self.F_MAP[cnt + count * self.CHANNELS] + self.FGAP:
-        cnt += 1
-        if cnt == self.CHANNELS:
+      while fft_freqs[i] > self.compute_target_frequency(chord, jump_index, symbol_index) + self.FGAP:
+        chord += 1
+        if chord == self.CHANNELS:
           stop = True
           break
       if stop:
         break
-      if fft_freqs[i] > self.F_MAP[cnt + count * self.CHANNELS] - self.FGAP:
-        v = { 's': np.abs(fft_result[i]), 'f': fft_freqs[i], 'chord': cnt}
+      if fft_freqs[i] > self.compute_target_frequency(chord, jump_index, symbol_index) - self.FGAP:
+        v = { 's': np.abs(fft_result[i]), 'f': fft_freqs[i], 'chord': chord}
         if ans == None or ans['s'] < v['s']:
           ans = v
     if ans is not None and ans['s'] > power_threshold:
@@ -105,18 +111,23 @@ class Player:
     ec = []
     for c in payload:
       if ord(c) <= ord('Z') and ord(c) >= ord('A'): # directly map.
-        ec.append(ord(c) - ord('A') + 1)
+        v = ord(c) - ord('A') + 1
+        ec.extend( [ v // 8, v % 8 ] )
+        # ec.append(ord(c) - ord('A') + 1)
       elif ord(c) <= ord('z') and ord(c) >= ord('a'):
-        ec.append(ord(c) - ord('a') + 1 + 26)
+        v = ord(c) - ord('a') + 27
+        ec.extend( [ v // 8, v % 8 ] )
+        # ec.append(ord(c) - ord('a') + 1 + 26)
       else:
-        ec.append(0)
+        ec.append( [ 7, 7 ] )
     # TODO!
     return [ e % self.CHANNELS for e in ec ]
 
   # TODO: with a better encoding algorithm.
   def decode_payload(self, payload):
     ec = ""
-    for c in payload:
+    for i in range(0, len((payload)), 2):
+      c = payload[i] * 8 + payload[i + 1]
       if c <= 26 and c >= 1: # directly map.
         ec += chr(c + ord('A') - 1)
       elif c <= 26 + 26 and c >= 26 + 1:
@@ -126,12 +137,18 @@ class Player:
     # TODO!
     return ec
 
+  # Freqency index: symbol_index * self.CHANNELS * self.FREQ_AREA_PER_SYMBOL + jump_index * self.CHANNELS + chord
+  def compute_target_frequency(self, chord, jump_index, symbol_index):
+    return self.F_MAP[symbol_index * self.CHANNELS * self.JUMP_FREQ_AREA_PER_SYMBOL + jump_index * self.CHANNELS + chord]
+
+  def compute_target_frequency_index(self, chord, jump_index, symbol_index):
+    return symbol_index * self.CHANNELS * self.JUMP_FREQ_AREA_PER_SYMBOL + jump_index * self.CHANNELS + chord
 
   def send_text(self, payload ="aaaa"):
     # YYY: encode payload as a zero-one sequence
 
     payload = self.encode_payload(payload)
-    while len(payload) % self.PAYLOAD_SIZE:
+    while len(payload) % self.SYMBOL_PER_PAYLOAD:
       payload.append(0)
     
     p = pyaudio.PyAudio()
@@ -141,24 +158,43 @@ class Player:
     wf.setsampwidth(p.get_sample_size(pyaudio.paFloat32))
     wf.setframerate(self.F_SAMPLE_RATE)
     wf.setnchannels(1)
-    chunks = [ payload[i:i+self.PAYLOAD_SIZE] for i in range(0, len(payload), self.PAYLOAD_SIZE)]
+    chunks = [ payload[i:i+self.SYMBOL_PER_PAYLOAD] for i in range(0, len(payload), self.SYMBOL_PER_PAYLOAD)]
     for chunk in chunks:
       self.send_text_n_bit(chunk, stream, wf)
       print("chunk:", self.decode_payload(chunk), chunk)
     stream.close()
     p.terminate()
     wf.close()
+  
+  def copy_amble_code(self, code, time):
+    a = []
+    for c in code:
+      for t in range(time):
+        a.append(ord(c) - ord('0'))
+    return a
 
   def send_text_n_bit(self, payload, stream, wf = None, area_id = 0):
-    seq = [ int(c) for c in self.PREAMBLE_CODE ]
+    seq = self.copy_amble_code(self.PREAMBLE_CODE, self.SYMBOL_PER_DURATION) 
+    
+    # [ int(c) for c in self.PREAMBLE_CODE ] * self.SYMBOL_PER_DURATION
     seq.extend(payload)
-    seq.extend( [ int(c) for c in self.POSTAMBLE_CODE ] ) # TODO!
+    seq.extend( self.copy_amble_code(self.POSTAMBLE_CODE, self.SYMBOL_PER_DURATION)  ) # TODO!
     inner_index = 0
-    for s in seq:
+    for symbol_group in range(0, len(seq) // self.SYMBOL_PER_DURATION ):
+      bits = []
+      jump_index = symbol_group % self.JUMP_FREQ_AREA_PER_SYMBOL
+      for symbol_index in range(self.SYMBOL_PER_DURATION):
+        s = seq[ symbol_group * self.SYMBOL_PER_DURATION + symbol_index ]
+        bits.append( self.compute_target_frequency_index( s , jump_index, symbol_index)  )
+      print(bits)
+      self.generate_bit(bits, stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
+        
+        # target_bit = seq[symbol_i]
+    # for s in seq:
       # TODO: multiple char in one duration
-      target_bit = s + inner_index * self.CHANNELS
-      self.generate_bit([target_bit], stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
-      inner_index = (inner_index + 1) % self.FREQ_AREA_PER_SYMBOL
+      # target_bit = s + inner_index * self.CHANNELS
+      # self.generate_bit([target_bit], stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
+      # inner_index = (inner_index + 1) % self.JUMP_FREQ_AREA_PER_SYMBOL
   
   def send_text_two_bit(self, payload, stream, wf = None):
     print("send text with two bit is only used for testing purpose. deprecated.")
@@ -216,7 +252,7 @@ class Player:
     found = False
     start_index = -1
     next_offset = -1
-    for index in range(2):
+    for start_jump_index in range(self.JUMP_FREQ_AREA_PER_SYMBOL):
       if found:
         break
       for offset in [ int(self.SINGLE_DURATION / div * (i) * self.F_SAMPLE_RATE) for i in range(div) ]:
@@ -226,37 +262,41 @@ class Player:
   
         sliced = []
         power_threshold = self.POWER_THRESHOLD * step
-        cnt = 0
+        jump_index = start_jump_index
         for i in range(offset, len(signal) - step,  step ):
           # draw_fft_result(signal[i: i + step] )
           fft_result = np.fft.fft(signal[i : i + step])
           fft_freqs = np.fft.fftfreq(len(fft_result), 1/self.F_SAMPLE_RATE)
-          possible_bit = self.select_frequency(fft_result, fft_freqs, power_threshold, (cnt + index) % 2 )
-          sliced.append(possible_bit)
-          cnt += 1
+          for j in range(self.SYMBOL_PER_DURATION):
+            possible_bit = self.select_frequency(fft_result, fft_freqs, power_threshold, jump_index = jump_index, symbol_index = j )
+            sliced.append(possible_bit)
+          jump_index = (jump_index + 1) % self.JUMP_FREQ_AREA_PER_SYMBOL
   
-        preamble = self.PREAMBLE_TEMPLATE[1]
-        payload_index = detect_preamble(sliced, preamble)
-        if payload_index is None:
-          # A failure leads to a heavier denoise algorithm.
+        preamble = self.PREAMBLE_TEMPLATE
+        payload_index = detect_preamble(sliced, preamble) 
+        if payload_index is None or payload_index % self.SYMBOL_PER_DURATION != 0:
+          # A failure lead to a heavier denoise algorithm.
           # TODO: premature quit if it is a sequence of obvious noise.
           # if not denoised:
             # denoised = True
             # signal = librosa.effects.trim(signal, top_db=80)[0]
           continue
         else:
+          payload_index = payload_index // self.SYMBOL_PER_DURATION
           step = int(self.SINGLE_DURATION * self.F_SAMPLE_RATE)
           found = True
-          next_offset = int(payload_index * small_step_len * self.F_SAMPLE_RATE)
-          start_index = index + payload_index
+          next_offset = offset + int(payload_index * small_step_len * self.F_SAMPLE_RATE)
+          start_index = start_jump_index + payload_index
           # print("offset:", offset)
           break
   
     if not found:
+      # print(sliced, "not found.")
       return signal[-self.MAX_SAMPLE_MSG:]
     # print("good!")
     # exit()
     # TODO: variable-sized message
+    # print(sliced, "found.")
     # print("good:", sliced[:self.MSG_SIZE])
 
     offset = next_offset
@@ -265,20 +305,25 @@ class Player:
   
     sliced = []
     power_threshold = self.POWER_THRESHOLD * step 
-    cnt = 0
+    jump_index = 0
     for i in range(offset, len(signal) - step,  step ):
       fft_result = np.fft.fft(signal[i : i + step])
       fft_freqs = np.fft.fftfreq(len(fft_result), 1/self.F_SAMPLE_RATE)
-      possible_bit = self.select_frequency(fft_result, fft_freqs, power_threshold, (cnt + start_index) % 2)
-      sliced.append(possible_bit)
-      cnt += 1
+      for j in range(self.SYMBOL_PER_DURATION):
+        possible_bit = self.select_frequency(fft_result, fft_freqs, power_threshold, jump_index = jump_index, symbol_index = j )
+        sliced.append(possible_bit)
+      # possible_bit = self.select_frequency(fft_result, fft_freqs, power_threshold, (current_index + start_index) % 2)
+      # sliced.append(possible_bit)
+      jump_index = (jump_index + 1) % self.JUMP_FREQ_AREA_PER_SYMBOL
   
     # TODO: check preamble the second time.
-    print("* sliced from preamble:", sliced)
+    # print("* sliced from preamble:", sliced)
     # TODO: variable-sized message
-    msg = sliced[:self.MSG_SIZE]
-    result = msg[ len(self.PREAMBLE_CODE): len(self.PREAMBLE_CODE) + self.PAYLOAD_SIZE ]
-    print("* payload:", msg[ len(self.PREAMBLE_CODE): len(self.PREAMBLE_CODE) + self.PAYLOAD_SIZE ] )
+    msg = sliced[:self.MSG_SIZE * self.SYMBOL_PER_DURATION]
+    # print("msg:", msg)
+    result = msg[ len(self.PREAMBLE_CODE) * self.SYMBOL_PER_DURATION: (len(self.PREAMBLE_CODE) + self.PAYLOAD_SIZE) * self.SYMBOL_PER_DURATION ]
+    # print("* payload:", msg[ len(self.PREAMBLE_CODE): len(self.PREAMBLE_CODE) + self.PAYLOAD_SIZE ] )
+    print("* payload:", result)
     print("** decode:", self.decode_payload(result))
     # TODO: check postamble.
     # TODO: variable-sized message
@@ -289,7 +334,8 @@ class Player:
     signal = raw.readframes(-1)
     signal = np.frombuffer(signal, dtype ="float32")
     # Load the WAV file
-    self.decode_once(signal) 
+    while len(signal) >= self.MAX_SAMPLE_MSG:
+      signal = self.decode_once(signal) 
 
 
   def keep_recording(self, record_length = 100, debug = True):
