@@ -1,21 +1,30 @@
 from utils import *
+from tkinter import ttk
 
 import multiprocessing
+import argparse
 import pyaudio
 import wave
 import numpy as np
 import pygame
 import pywt
 import multiprocessing
+import tkinter as tk
 
 parser = argparse.ArgumentParser(description="Audio helper.")
-functions = ['draw', 'record', 'send' ]
+functions = ['draw', 'record', 'send', 'gui' ]
 parser.add_argument('function', choices=functions, help="")
-parser.add_argument('file', help="audio(wav) filepath (read/write)")
+parser.add_argument('--file', help="audio(wav) filepath (read/write)")
 parser.add_argument('--frequency', help="frequency for genernating(Q1)")
 parser.add_argument('--sampling_rate', help="samping rate for generating(Q1) and recording(Q3)")
 parser.add_argument('--duration', help="duration for genernating(Q1) and recording(Q3)")
 args = parser.parse_args()
+
+TEST_STR1 = "QQcTghKTkklwnWWmXtsOHnwHwZHzRZwUsKFiXvsrsucaUCekywtbzTkOyVYjJEbrRlBudXpCgzGgRIMZLbebHASoIFLjZHaxUQNg"
+
+TEST_STR2 = "vRCfkzdELlciuBAUIrBAzEIbPtuhsehbsiCwBQjqcVpWvxxyZZzFAcIVKfXGYBTJDbKXpsPBfzfllyOCQtPTDwIUtlPpeQiZlDCJ"
+    
+TO_TEST = TEST_STR2
 
 
 class Player:
@@ -24,7 +33,7 @@ class Player:
   def __init__(self):
     self.F_SAMPLE_RATE = 44100
     self.FRAMES_PER_BUFFER = 4096
-    self.SINGLE_DURATION = 0.05
+    self.SINGLE_DURATION = 0.065
 
     self.switch = 0
     self.count = 0
@@ -33,27 +42,19 @@ class Player:
 
     # message layout
     # YYY: preamble code + payload + postamble
-    self.PAYLOAD_SIZE = 10
-    self.PREAMBLE_CODE="1112223344"
-    self.POSTAMBLE_CODE="4433322111"
+    self.PAYLOAD_SIZE = 50
+    self.PREAMBLE_CODE= "7777111177772222"
+    self.POSTAMBLE_CODE="1100"
     self.MSG_SIZE = len(self.PREAMBLE_CODE) + len(self.POSTAMBLE_CODE) + self.PAYLOAD_SIZE
 
     self.MIN_SAMPLE_MSG = int(self.MSG_SIZE * self.SINGLE_DURATION * self.F_SAMPLE_RATE)
     self.MAX_SAMPLE_MSG = int(self.MSG_SIZE * self.SINGLE_DURATION * self.F_SAMPLE_RATE)
 
-    # TODO: remove steps.
-    self.STEPS_TABLE = [1, 2, 3, 5] 
-    
-    # for step in self.STEPS_TABLE:
-
-
-    # Use piano chords as frequency map 
-    # YYY: it is not the best frequency for transmitting, but the best for my ears when testing.
     self.JUMP_FREQ_AREA_PER_SYMBOL = 2 # Increase this number to get more accurate result.
-    self.SYMBOL_PER_DURATION = 3 # Increase this number to transfer more info at one duration
-    self.CHANNELS = 8 # Increaase this number to transfer more info at one duration.
-    self.FGAP = 100 # Increase this number to get more accurate result.
-    self.CHORD_DIFF = 8 # 
+    self.SYMBOL_PER_DURATION = 1 # Increase this number to transfer more info at one duration
+    self.CHANNELS = 54 # Increaase this number to transfer more info at one duration.
+    # self.CHANNELS = 8
+    self.FGAP = 40 # Increase this number to get more accurate result.
 
     preamble = []
     for s in self.PREAMBLE_CODE:
@@ -64,12 +65,11 @@ class Player:
 
     self.SYMBOL_PER_PAYLOAD = self.PAYLOAD_SIZE * self.SYMBOL_PER_DURATION
 
-    self.POWER_THRESHOLD = 5.0 / self.F_SAMPLE_RATE
-    # self.F_MAP = [ piano_major_scale(i * self.CHORD_DIFF) for i in range(self.CHANNELS) ]
+    self.POWER_THRESHOLD = 1.0 / self.F_SAMPLE_RATE
 
     self.BASE_FREQ = 1000
     self.GAP_RATE = 2.2 # Increase this number to get more accurate result
-    self.AREA_GAP = int( self.FGAP * self.CHANNELS * self.GAP_RATE * 1.15 )
+    self.AREA_GAP = int( self.FGAP * self.CHANNELS * self.GAP_RATE * 1.05 )
     self.F_MAP = []
     for a in range(self.JUMP_FREQ_AREA_PER_SYMBOL * self.SYMBOL_PER_DURATION):
       self.F_MAP.extend([ self.BASE_FREQ + self.AREA_GAP * a + i * (self.FGAP * self.GAP_RATE) for i in range(self.CHANNELS) ])
@@ -80,12 +80,6 @@ class Player:
   def generate_bit(self, index, stream, duration, sampling_rate, wf = None):
     audio = np.sum( [ generate_beep(duration, self.F_MAP[_index] , sampling_rate) for _index in index ], axis=0)
     audio = audio / len(index)
-    # g_audio = np.array([ generate_beep(duration, self.F_MAP[_index] , sampling_rate) for _index in index ])
-    # g_audio = np.array( audio ) * 2
-    # g_audio.resize( (2, len(audio) ) )
-    # g_audio.resize( ( len(index), len(audio) )   )
-    # print(g_audio.shape)
-    # exit()
     sbytes = np.array(audio, dtype=np.float32)
     stream.write(sbytes.tobytes())
     # if wf:
@@ -118,36 +112,58 @@ class Player:
     else:
       return 1024
   
-  # TODO: with a better encoding algorithm.
   def encode_payload(self, payload):
-    ec = []
-    for c in payload:
-      if ord(c) <= ord('Z') and ord(c) >= ord('A'): # directly map.
-        v = ord(c) - ord('A') + 1
-        ec.extend( [ v // 8, v % 8 ] )
-        # ec.append(ord(c) - ord('A') + 1)
-      elif ord(c) <= ord('z') and ord(c) >= ord('a'):
-        v = ord(c) - ord('a') + 27
-        ec.extend( [ v // 8, v % 8 ] )
-        # ec.append(ord(c) - ord('a') + 1 + 26)
-      else:
-        ec.append( [ 7, 7 ] )
-    # TODO!
-    return [ e % self.CHANNELS for e in ec ]
+    if self.CHANNELS < 53:
+      ec = []
+      for c in payload:
+        if ord(c) <= ord('Z') and ord(c) >= ord('A'): # directly map.
+          v = ord(c) - ord('A') + 1
+          ec.extend( [ v // 8, v % 8 ] )
+          # ec.append(ord(c) - ord('A') + 1)
+        elif ord(c) <= ord('z') and ord(c) >= ord('a'):
+          v = ord(c) - ord('a') + 27
+          ec.extend( [ v // 8, v % 8 ] )
+          # ec.append(ord(c) - ord('a') + 1 + 26)
+        else:
+          ec.append( [ 7, 7 ] )
+      return [ e % self.CHANNELS for e in ec ]
+    else:
+      ec = []
+      for c in payload:
+        if ord(c) <= ord('Z') and ord(c) >= ord('A'): # directly map.
+          v = ord(c) - ord('A') + 1
+          ec.extend( [ v ]  )
+          # ec.append(ord(c) - ord('A') + 1)
+        elif ord(c) <= ord('z') and ord(c) >= ord('a'):
+          v = ord(c) - ord('a') + 27
+          ec.extend( [ v ] )
+        else:
+          ec.append( 0 )
+      return [ e % self.CHANNELS for e in ec ]
 
-  # TODO: with a better encoding algorithm.
   def decode_payload(self, payload):
-    ec = ""
-    for i in range(0, len((payload)), 2):
-      c = payload[i] * 8 + payload[i + 1]
-      if c <= 26 and c >= 1: # directly map.
-        ec += chr(c + ord('A') - 1)
-      elif c <= 26 + 26 and c >= 26 + 1:
-        ec += chr(c + ord('a') - 27)
-      else:
-        ec += '.'
-    # TODO!
-    return ec
+    if self.CHANNELS < 53:
+      ec = ""
+      for i in range(0, len((payload)), 2):
+        c = payload[i] * 8 + payload[i + 1]
+        if c <= 26 and c >= 1: # directly map.
+          ec += chr(c + ord('A') - 1)
+        elif c <= 26 + 26 and c >= 26 + 1:
+          ec += chr(c + ord('a') - 27)
+        else:
+          ec += ' '
+      return ec
+    else:
+      ec = ""
+      for i in range(0, len((payload)), 1):
+        c = payload[i] 
+        if c <= 26 and c >= 1: # directly map.
+          ec += chr(c + ord('A') - 1)
+        elif c <= 26 + 26 and c >= 26 + 1:
+          ec += chr(c + ord('a') - 27)
+        else:
+          ec += ' '
+      return ec
 
   # Freqency index: symbol_index * self.CHANNELS * self.FREQ_AREA_PER_SYMBOL + jump_index * self.CHANNELS + chord
   def compute_target_frequency(self, chord, jump_index, symbol_index):
@@ -165,11 +181,6 @@ class Player:
     
     p = pyaudio.PyAudio()
     stream = p.open(rate=self.F_SAMPLE_RATE, channels=1, format=pyaudio.paFloat32, output=True)
-    # wf is used of testing, can be removed later.
-    # wf = wave.open('output.wav', 'wb')
-    # wf.setsampwidth(2)
-    # wf.setframerate(self.F_SAMPLE_RATE)
-    # wf.setnchannels(2)
     chunks = [ payload[i:i+self.SYMBOL_PER_PAYLOAD] for i in range(0, len(payload), self.SYMBOL_PER_PAYLOAD)]
     for chunk in chunks:
       self.send_text_n_bit(chunk, stream, None)
@@ -182,16 +193,22 @@ class Player:
     a = []
     for c in code:
       for t in range(time):
-        a.append(ord(c) - ord('0'))
+        a.append((ord(c) - ord('0')))
     return a
 
   def send_text_n_bit(self, payload, stream, wf = None, area_id = 0):
-    seq = self.copy_amble_code(self.PREAMBLE_CODE, self.SYMBOL_PER_DURATION) 
+
+    seq = []
+    # seq.extend( self.copy_amble_code(self.POSTAMBLE_CODE, self.SYMBOL_PER_DURATION) )
+    seq.extend( self.copy_amble_code(self.PREAMBLE_CODE, self.SYMBOL_PER_DURATION) )
     
-    # [ int(c) for c in self.PREAMBLE_CODE ] * self.SYMBOL_PER_DURATION
     seq.extend(payload)
     seq.extend( self.copy_amble_code(self.POSTAMBLE_CODE, self.SYMBOL_PER_DURATION)  ) # TODO!
-    inner_index = 0
+    s = self.generate_bit( [0], stream, self.SINGLE_DURATION * 3, self.F_SAMPLE_RATE, wf = wf)
+    if self.symall is None:
+        self.symall = s
+    else:
+        self.symall = np.append(self.symall, s)
     for symbol_group in range(0, len(seq) // self.SYMBOL_PER_DURATION ):
       bits = []
       jump_index = symbol_group % self.JUMP_FREQ_AREA_PER_SYMBOL
@@ -205,15 +222,6 @@ class Player:
         self.symall = np.append(self.symall, sym)
     
     print(self.symall.shape)
-    # save_signal(symall, 44100, fn = "output.wav")
-    # print(symall)
-        
-        # target_bit = seq[symbol_i]
-    # for s in seq:
-      # TODO: multiple char in one duration
-      # target_bit = s + inner_index * self.CHANNELS
-      # self.generate_bit([target_bit], stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
-      # inner_index = (inner_index + 1) % self.JUMP_FREQ_AREA_PER_SYMBOL
   
   def send_text_two_bit(self, payload, stream, wf = None):
     print("send text with two bit is only used for testing purpose. deprecated.")
@@ -222,7 +230,11 @@ class Player:
     for s in seq:
       self.generate_bit([0 if s == "0" else 1], stream, self.SINGLE_DURATION, self.F_SAMPLE_RATE, wf = wf)
   
-  def keep_decoding(self, frame_queue):
+  def wrap_signal(signal):
+    l = len(signal)
+    return signal[int(l * 0.02): int(l - (l * 0.02))]
+  
+  def keep_decoding(self, frame_queue, data_queue=None):
     signal = []
     count = 0
     while True:
@@ -234,42 +246,22 @@ class Player:
         if len(signal) / self.F_SAMPLE_RATE > 5:
           break
       if len(signal) > self.MAX_SAMPLE_MSG:
-        signal = self.decode_once(signal)
+        signal = self.decode_once(signal, data_queue)
         print("decode.", len(signal), signal[0])
   
-  def decode_once(self,signal):
+  def decode_once(self,signal, data_queue=None):
     if len(signal) < self.MIN_SAMPLE_MSG: 
       return signal
   
     # Apply the band-pass filter
     signal = butter_bandpass_filter(signal, self.F_MAP[0] // 2, self.F_MAP[-1] + 1000, self.F_SAMPLE_RATE, 5)
   
-    # Apply spectral subtraction for denoising
-    # D = librosa.amplitude_to_db(librosa.stft(signal), ref=np.max)
-    # D2 = librosa.decompose.nn_filter(D, aggregate=np.median, metric='cosine')
-    # Invert the denoised spectrogram to get the denoised signal
-    # signal = librosa.griffinlim(librosa.db_to_amplitude(D2))
-  
-    # 小波变换
-    # wavelet = 'db1'  
-    # level = 4        
-    # coeffs = pywt.wavedec(signal, wavelet, level=level)
-    # threshold = 0.00005  
-    # coeffs_thresholded = [pywt.threshold(c, threshold, mode='soft') for c in coeffs]
-    # signal = pywt.waverec(coeffs_thresholded, wavelet)
-  
-    # save denoised signal.
-    # save_signal(signal)
-  
     offset = -1
     # find a proper start of the signal
     # YYY: There may be an offset compare to the start of the recording and the start of the signal.
-    # YYY: Divide signal into certain small piceses to find the proper start of the signal.
-    # YYY: We assume the signal is initiiatlly good. If we cannot detect the preamble at a first try, we use a heavier denoise algorithm to improve audio quality. 
-    denoised = False
+    # YYY: Change offset and working freq area to find the proper start of the signal.
     div = 10
     found = False
-    start_index = -1
     next_offset = -1
     for start_jump_index in range(self.JUMP_FREQ_AREA_PER_SYMBOL):
       if found:
@@ -283,7 +275,6 @@ class Player:
         power_threshold = self.POWER_THRESHOLD * step
         jump_index = start_jump_index
         for i in range(offset, len(signal) - step,  step ):
-          # draw_fft_result(signal[i: i + step] )
           fft_result = np.fft.fft(signal[i : i + step])
           fft_freqs = np.fft.fftfreq(len(fft_result), 1/self.F_SAMPLE_RATE)
           for j in range(self.SYMBOL_PER_DURATION):
@@ -295,7 +286,6 @@ class Player:
         payload_index = detect_preamble(sliced, preamble) 
         if payload_index is None or payload_index % self.SYMBOL_PER_DURATION != 0:
           # A failure lead to a heavier denoise algorithm.
-          # TODO: premature quit if it is a sequence of obvious noise.
           # if not denoised:
             # denoised = True
             # signal = librosa.effects.trim(signal, top_db=80)[0]
@@ -305,18 +295,10 @@ class Player:
           step = int(self.SINGLE_DURATION * self.F_SAMPLE_RATE)
           found = True
           next_offset = offset + int(payload_index * small_step_len * self.F_SAMPLE_RATE)
-          start_index = start_jump_index + payload_index
-          # print("offset:", offset)
           break
   
     if not found:
-      # print(sliced, "not found.")
       return signal[-self.MAX_SAMPLE_MSG:]
-    # print("good!")
-    # exit()
-    # TODO: variable-sized message
-    # print(sliced, "found.")
-    # print("good:", sliced[:self.MSG_SIZE])
 
     offset = next_offset
     if offset + self.MAX_SAMPLE_MSG > len(signal):
@@ -331,21 +313,17 @@ class Player:
       for j in range(self.SYMBOL_PER_DURATION):
         possible_bit = self.select_frequency(fft_result, fft_freqs, power_threshold, jump_index = jump_index, symbol_index = j )
         sliced.append(possible_bit)
-      # possible_bit = self.select_frequency(fft_result, fft_freqs, power_threshold, (current_index + start_index) % 2)
-      # sliced.append(possible_bit)
       jump_index = (jump_index + 1) % self.JUMP_FREQ_AREA_PER_SYMBOL
   
-    # TODO: check preamble the second time.
-    # print("* sliced from preamble:", sliced)
-    # TODO: variable-sized message
     msg = sliced[:self.MSG_SIZE * self.SYMBOL_PER_DURATION]
-    # print("msg:", msg)
     result = msg[ len(self.PREAMBLE_CODE) * self.SYMBOL_PER_DURATION: (len(self.PREAMBLE_CODE) + self.PAYLOAD_SIZE) * self.SYMBOL_PER_DURATION ]
-    # print("* payload:", msg[ len(self.PREAMBLE_CODE): len(self.PREAMBLE_CODE) + self.PAYLOAD_SIZE ] )
     print("* payload:", result)
-    print("** decode:", self.decode_payload(result))
-    # TODO: check postamble.
-    # TODO: variable-sized message
+    decoded_r = self.decode_payload(result)
+    print("** decode:", decoded_r)
+    decoded_r = decoded_r.rstrip('.')
+    
+    if data_queue is not None:
+      data_queue.put(self.decode_payload(result))
     return signal[offset + self.MAX_SAMPLE_MSG: ]
 
   def draw_audio(self, path):
@@ -355,15 +333,13 @@ class Player:
     # Load the WAV file
     while len(signal) >= self.MAX_SAMPLE_MSG:
       signal = self.decode_once(signal) 
-
-
-  def keep_recording(self, record_length = 100, debug = True):
+  
+  def keep_recording(self, record_length = 100,  data_queue=None):
     frame_queue = multiprocessing.Queue(maxsize=4096)
-    process = multiprocessing.Process(target=self.keep_decoding, args=(frame_queue, ))
+    process = multiprocessing.Process(target=self.keep_decoding, args=(frame_queue, data_queue, ))
     process.start()
 
     print("keep recording...")
-    # self.debug = True # !!! change later.
     self.debug = False
     fn = datetime.datetime.now().strftime("record.%m%d-%H-%M-%S.%f.wav")
     with wave.open(fn, 'wb') as wf:
@@ -384,6 +360,110 @@ class Player:
       stream.close()
       p.terminate()
 
+
+window = tk.Tk()
+
+send_player = None
+receive_player = None
+insert_var = tk.StringVar()
+len_var = tk.StringVar()
+receive_var = tk.StringVar()
+compare_var = tk.StringVar()
+
+def on_send_clicked():
+  send_player = Player()
+  send_player.send_text(insert_var.get())
+
+def on_insert_change(event):
+  if len_var:
+    len_var.set("input string length:"+ str(len( insert_var.get() )))
+  compare_io()
+  pass
+
+def on_clear_clicked():
+  receive_var.set("")
+  compare_io()
+
+def compare_io():
+  l = min(len(receive_var.get()), len(insert_var.get()))
+  a = receive_var.get()[:l]
+  b = insert_var.get()[:l]
+  if a != b:
+    label = "IO differ: "
+    for i in range(l):
+      if a[i] != b[i]:
+         label = label + f"#at index {i}, receive-*{a[i]}*, input-*{b[i]}* #\n" 
+  else:
+    label = "IO are the same.\n"
+  compare_var.set(label)
+
+Gdata_queue = multiprocessing.Queue(maxsize=4096)
+
+def start_receive():
+  def update_data():
+    print("get into the loop.")
+    while not Gdata_queue.empty():
+      d = Gdata_queue.get()
+      receive_var.set( receive_var.get() + d )
+      compare_io()
+    window.after(200, update_data)
+  window.after(200, update_data)
+
+  receive_player = Player()
+  process = multiprocessing.Process(target=receive_player.keep_recording, args=(100, Gdata_queue, ))
+  process.start()
+
+
+
+
+def gui_start():
+  # Create the main window
+  window.title("Audio Transmitter")
+  # text1_var = "INPUT != OUTPUT"
+  # text2_var = tk.StringVar()
+
+  insert_var.set(TO_TEST)
+
+  # insert_var.set("pkmnhuygbeAusVEFhjiuasdfBERabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZlkajsdhflkjqhwelrkjbl")
+  # insert_var.set("QQcTghKTkklwnWWmXtsOHnwHwZHzRZwUsKFiXvsrsucaUCekywtbzTkOyVYjJEbrRlBudXpCgzGgRIMZLbebHASoIFLjZHaxUQNg")
+  insert_entry = tk.Entry(window, textvariable=insert_var, width=100)
+  insert_entry.bind("<Key>", on_insert_change)  # Bind the event handler to the insert entry
+
+  len_var.set("input string length:"+ str(len( insert_var.get() )))
+  len_text = tk.Label(window, textvariable=len_var)
+
+  # Create the first button and text field
+  button1 = tk.Button(window, text="send", command=on_send_clicked)
+  button2 = tk.Button(window, text="clear received", command=on_clear_clicked)
+  button3 = tk.Button(window, text="start receive", command=start_receive)
+
+  receive_text = tk.Entry(window, textvariable=receive_var, width=100)
+  
+  # Create the second button and text field
+  # button2 = tk.Button(window, text="Button 2", command=on_check_clicked)
+  # text2 = tk.Entry(window, textvariable=text2_va
+
+  separator = ttk.Separator(window, orient='horizontal')
+  
+  # Place the widgets in the window
+  tk.Label(window, text="Sender:").pack(pady=5)
+  insert_entry.pack(pady=10)
+  len_text.pack(pady=5)
+  button1.pack(pady=10)
+  separator.pack(fill='x', pady=5)
+  tk.Label(window, text="Receiver").pack(pady=5)
+  button3.pack(pady=10)
+  receive_text.pack(pady=10)
+  tk.Label(window, textvariable=compare_var, wraplength=400).pack(pady=5)
+  button2.pack(pady=5)
+  
+  receive_var.set("")
+  compare_io()
+
+  # Start the GUI event loop
+  window.mainloop()
+
+
 if __name__ == "__main__":
   player = Player()
   if args.function == "draw":
@@ -392,5 +472,7 @@ if __name__ == "__main__":
     player.keep_recording()
   elif args.function == "send":
     player.send_text(args.file)
+  elif args.function == "gui":
+    gui_start()
   else:
     print("i don't understand.")
